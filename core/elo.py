@@ -35,6 +35,7 @@ from .elo_helpers_cw import (
     create_matchup_signature_cw,
     build_existing_matchup_set_cw,
     update_existing_matchups_from_comparisons_cw,
+    filter_comparisons_for_solver_cw,
     get_solver_comparisons_cw,
     models_in_comparisons_cw,
     recompute_fractions_for_comparisons_cw # For re-calculating stored fractions
@@ -791,7 +792,7 @@ def run_elo_analysis_creative(
 
             # --- Re-solve ELO ratings ---
             # Use current rank window setting from config for interim solves
-            comps_for_solver = get_solver_comparisons_cw(all_comparisons_global, elo_snapshot, RANK_WINDOW)
+            comps_for_solver = filter_comparisons_for_solver_cw(all_comparisons_global)
             
             if not comps_for_solver:
                 logging.warning("[ELO-CW] No valid comparisons for interim ELO solve. Stability not checked.")
@@ -854,7 +855,7 @@ def run_elo_analysis_creative(
         return existing_analyses, elo_error_message
 
 
-    final_comps_for_solver = get_solver_comparisons_cw(all_comparisons_global, elo_snapshot, RANK_WINDOW)
+    final_comps_for_solver = filter_comparisons_for_solver_cw(all_comparisons_global)
 
     if not final_comps_for_solver:
         logging.warning("[ELO-CW] No valid comparisons available for final ELO solve after filtering.")
@@ -873,20 +874,22 @@ def run_elo_analysis_creative(
             models_for_final_solve,
             final_comps_for_solver,
             initial_ratings=initial_ratings_final_solve,
-            use_fixed_initial_ratings=True, 
-            bin_size_override=TRUESKILL_BIN_SIZE_FOR_WIN_EXPANSION, 
+            use_fixed_initial_ratings=True,
+            bin_size_override=TRUESKILL_BIN_SIZE_FOR_WIN_EXPANSION,
             return_sigma=True,
-            debug=True 
+            debug=True,
+            num_trials=10
         )
 
         _ , final_sigma_map_for_ci_bin = solve_with_trueskill_cw(
             models_for_final_solve,
             final_comps_for_solver,
-            initial_ratings=final_mu_map, 
-            use_fixed_initial_ratings=True, 
-            bin_size_override=TRUESKILL_BIN_SIZE_FOR_CI_CALCULATION, 
+            initial_ratings=final_mu_map,
+            use_fixed_initial_ratings=True,
+            bin_size_override=TRUESKILL_BIN_SIZE_FOR_CI_CALCULATION,
             return_sigma=True,
-            debug=False
+            debug=False,
+            num_trials=10
         )
         
         normalized_mu_map = normalize_elo_scores_cw(final_mu_map) 

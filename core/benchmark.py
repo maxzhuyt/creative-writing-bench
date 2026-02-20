@@ -215,8 +215,13 @@ def run_eq_bench_creative(
         logging.info(f"Created new run: {run_key}")
     else:
         logging.info(f"Resuming run: {run_key}")
+        # reflect CLI judge model at run level (useful for displays)
+        saved_judge = runs[run_key].get("judge_model")
+        if judge_model and saved_judge != judge_model:
+            update_run_data(runs_file, run_key, {"judge_model": judge_model})
         if "start_time" not in runs[run_key]:
-             update_run_data(runs_file, run_key, {"start_time": datetime.now().isoformat()})
+            update_run_data(runs_file, run_key, {"start_time": datetime.now().isoformat()})
+
 
     # --- Load criteria and prompts ---
     creative_writing_criteria = []
@@ -265,12 +270,13 @@ def run_eq_bench_creative(
 
                     updated_results_by_mod = {}
                     for seed_mod, block in results_by_mod.items():
-                         # Create a copy of the block to modify
-                         updated_block = block.copy()
-                         updated_block.pop("judge_scores", None)
-                         updated_block.pop("raw_judge_text", None)
-                         updated_results_by_mod[seed_mod] = updated_block
-
+                        # Create a copy of the block to modify
+                        updated_block = block.copy()
+                        updated_block.pop("judge_scores", None)
+                        updated_block.pop("raw_judge_text", None)
+                        updated_results_by_mod[seed_mod] = updated_block
+                    
+                    updated_c_dict["judge_model"] = judge_model
                     updated_c_dict["results_by_modifier"] = updated_results_by_mod
 
                     # Add to batch update
@@ -309,6 +315,15 @@ def run_eq_bench_creative(
                 # Load existing task data into an object
                 try:
                     resumed_task = CreativeWritingTask.from_dict(c_data)
+
+                    # Prefer the CLI arg for the judge model (so re-runs/redo use the requested judge)
+                    if judge_model and resumed_task.judge_model != judge_model:
+                        logging.info(
+                            f"Overriding judge_model for prompt {prompt_key} (iter {i_str}): "
+                            f"{resumed_task.judge_model} -> {judge_model}"
+                        )
+                        resumed_task.judge_model = judge_model
+
                     if resumed_task.status in ("completed", "judged"):
                         missing = any(
                             not blk.get("judge_scores")
@@ -322,6 +337,7 @@ def run_eq_bench_creative(
                             )
                             resumed_task.status = "generated"
                     tasks_to_run.append(resumed_task)
+
                 except Exception as e:
                      logging.error(f"Failed to load task from dict for iter={i_str}, prompt={prompt_key}: {e}. Skipping task.", exc_info=True)
                      # Add placeholder or skip? Skipping for now.
@@ -373,68 +389,81 @@ def run_eq_bench_creative(
 
     # --- 2) Judge (if needed) ---
     tasks_needing_judging = []
-    # ** Minimal Change Logic: Primarily check in-memory status, consult file only for redo **
     logging.info("Identifying tasks requiring judging...")
-    # Load file data *once* specifically for the redo_judging check if needed
     existing_tasks_for_redo = {}
     if redo_judging:
-         run_data_for_redo = load_json_file(runs_file).get(run_key, {})
-         existing_tasks_for_redo = run_data_for_redo.get("creative_tasks", {})
+        run_data_for_redo = load_json_file(runs_file).get(run_key, {})
+        existing_tasks_for_redo = run_data_for_redo.get("creative_tasks", {})
 
-    for task_obj in tasks_to_run: # Iterate through the objects potentially updated by generation
+    for task_obj in tasks_to_run:
         needs_judging = False
-        current_status = task_obj.status # Check in-memory status first
+        current_status = task_obj.status
 
         if current_status == "generated":
             needs_judging = True
 
-        # Check redo flag against *saved* status if necessary
-        if redo_judging and not needs_judging: # Only check file if not already marked by 'generated' status
+        if redo_judging and not needs_judging:
             i_str = str(task_obj.iteration_index)
             prompt_id = task_obj.prompt_id
             iteration_dict = existing_tasks_for_redo.get(i_str, {})
             c_data = iteration_dict.get(str(prompt_id), {})
             saved_status = c_data.get("status", None)
-            if saved_status == "generated": # Check if file was reset correctly
-                 needs_judging = True
-                 logging.debug(f"Task {prompt_id} (Iter {i_str}) marked for judging via redo file check.")
-                 # Ensure in-memory object is also ready for judging if file was reset
-                 if task_obj.status != "generated":
-                      task_obj.status = "generated"
-                      # Clear potential stale scores from object if status was completed/judged
-                      results_by_mod = getattr(task_obj, 'results_by_modifier', {})
-                      for seed_mod, block in results_by_mod.items():
-                          block.pop("judge_scores", None)
-                          block.pop("raw_judge_text", None)
-
+            if saved_status == "generated":
+                needs_judging = True
+                logging.debug(f"Task {prompt_id} (Iter {i_str}) marked for judging via redo file check.")
+                if task_obj.status != "generated":
+                    task_obj.status = "generated"
+                    results_by_mod = getattr(task_obj, 'results_by_modifier', {})
+                    for seed_mod, block in results_by_mod.items():
+                        block.pop("judge_scores", None)
+                        block.pop("raw_judge_text", None)
 
         if needs_judging:
-            # Add the task object itself (potentially updated in memory)
             tasks_needing_judging.append(task_obj)
 
     if tasks_needing_judging:
         logging.info(f"Found {len(tasks_needing_judging)} tasks requiring judging.")
+        # 2a) Run all judges with deferred writes
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures_map = {
-                 executor.submit(
-                    task_obj.judge, # This method should update task_obj.status and save results
+                executor.submit(
+                    task_obj.judge,            # updates in-memory only
                     api_clients,
                     judge_prompt_template,
                     creative_writing_criteria,
                     negative_criteria,
                     runs_file,
-                    run_key
+                    run_key,
+                    False                      # write_to_disk=False  ← defer writes
                 ): task_obj for task_obj in tasks_needing_judging
             }
             for fut in tqdm(list(futures_map.keys()), total=len(futures_map), desc="Judging creative pieces"):
-                 task = futures_map[fut]
-                 try:
-                    _ = fut.result() # Wait for completion
-                 except Exception as e:
+                task = futures_map[fut]
+                try:
+                    _ = fut.result()
+                except Exception as e:
                     logging.error(f"Error judging task {task.prompt_id} (iter {task.iteration_index}): {e}", exc_info=True)
-                    # The judge method should ideally set task.status to an error state
+
+        # 2b) Single batch write after all judging is done
+        current_runs_after_judging = load_json_file(runs_file)
+        run_dict = current_runs_after_judging.get(run_key, {})
+        # Start from current creative_tasks to ensure we don't clobber unrelated items
+        merged_creative_tasks = run_dict.get("creative_tasks", {})
+
+        for task in tasks_needing_judging:
+            i_str = str(task.iteration_index)
+            if i_str not in merged_creative_tasks:
+                merged_creative_tasks[i_str] = {}
+            merged_creative_tasks[i_str][str(task.prompt_id)] = task.to_dict()
+
+        update_run_data(
+            runs_file,
+            run_key,
+            {"creative_tasks": merged_creative_tasks}
+        )
     else:
         logging.info("No tasks require judging based on status and redo flag.")
+
 
 
     # --- 3) Compute final results (Rubric scores, Bootstrap) ---

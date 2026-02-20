@@ -457,7 +457,8 @@ if False:
 # --- Initialize stopwords and punctuation (global scope is fine here) ---
 stop_words = set(stopwords.words('english'))
 punctuation_set = set(string.punctuation) # Use a different name than the module
-
+human_ngram_freqs_global = None
+min_freq = 0.0000001
 
 # ── helper ────────────────────────────────────────────────────────────────────
 def _load_human_ngram_freqs(human_profile_path: Path, n: int) -> Dict[str, float]:
@@ -465,6 +466,12 @@ def _load_human_ngram_freqs(human_profile_path: Path, n: int) -> Dict[str, float
     Load the pre-computed human baseline n-gram distribution and return a
     normalised frequency map (freq = count / total_counts).
     """
+    global human_ngram_freqs_global
+    global min_freq
+
+    if human_ngram_freqs_global != None:
+        return human_ngram_freqs_global
+    
     with open(human_profile_path, "r", encoding="utf-8") as f:
         hp = json.load(f)["human-authored"]
 
@@ -479,12 +486,17 @@ def _load_human_ngram_freqs(human_profile_path: Path, n: int) -> Dict[str, float
         return {}
 
     freqs: Dict[str, float] = {}
+    min_occurrences = 9999999999
     for it in items:
         try:
             ngram_str = " ".join(tok.lower() for tok in word_tokenize(it["ngram"]) if tok.isalpha())
             freqs[ngram_str] = int(it["frequency"]) / total
+            min_occurrences = int(it["frequency"]) # the last one in the list is the minimum
         except Exception:
             continue
+
+    min_freq = min_occurrences / total
+    human_ngram_freqs_global = freqs
     return freqs
 
 
@@ -506,7 +518,7 @@ def get_multi_prompt_ngrams(
         Each tuple is (ngram_as_tuple, raw_incidence_count_in_model_texts),
         sorted by descending count.
     """
-    global stop_words
+    global stop_words, min_freq
     if stop_words is None:
         stop_words = set(stopwords.words("english"))
 
@@ -551,7 +563,7 @@ def get_multi_prompt_ngrams(
     # 5. over-use ratios
     epsilon = 1e-12
     overuse_ratio = {
-        ng_str: model_freqs[ng_str] / (human_freqs.get(ng_str, 0.0) + epsilon)
+        ng_str: model_freqs[ng_str] / (human_freqs.get(ng_str, min_freq) + epsilon)
         for ng_str in model_freqs
     }
 

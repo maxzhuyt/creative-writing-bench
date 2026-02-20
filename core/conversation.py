@@ -59,10 +59,21 @@ class CreativeWritingTask:
             max_attempts = 3
             for attempt in range(1, max_attempts + 1):
                 try:
+                    system_msg = """Write with a style that embodies these qualities:
+- prefer to use longer sentences (in a natural way; mix it up)
+- don't use much dialogue
+- prefer fewer commas
+- prefer larger words
+"""
+                    system_msg = None
+                    style_bias = True
                     response = test_api.generate(self.test_model, final_prompt, temperature=0.7, max_tokens=4000, min_p=0.1, include_seed=False)
                     
                     # Check if response is too short
                     if len(response.strip()) < 500:
+                        print('----')
+                        print(response)
+                        print('----')
                         if attempt < max_attempts:
                             logging.warning(f"Generated text too short ({len(response.strip())} chars), retry {attempt}/{max_attempts} "
                                         f"(prompt_id={self.prompt_id}, seed={seed_modifier})")
@@ -124,6 +135,7 @@ class CreativeWritingTask:
         negative_criteria: List[str],
         runs_file=None,
         run_key=None,
+        write_to_disk: bool = True,
     ):
         """
         For each seed modifier, if there's a model_response and no generation failures,
@@ -131,6 +143,9 @@ class CreativeWritingTask:
         *completed* only if every modifier obtained at least one numeric score.
         Otherwise we keep the status 'generated' so it will be re-queued
         automatically on the next run.
+
+        If write_to_disk=False, this method only mutates in-memory state and returns;
+        the caller is responsible for persisting updated tasks in a single batch.
         """
         if self.status != "generated":
             logging.warning(
@@ -147,7 +162,6 @@ class CreativeWritingTask:
             if data_block.get("judge_scores"):
                 continue
 
-            # Skip judging if generation failed
             if data_block.get("generation_failed", False):
                 data_block["judge_scores"] = {}
                 data_block["raw_judge_text"] = (
@@ -176,7 +190,7 @@ class CreativeWritingTask:
                     self.judge_model,
                     final_judge_prompt,
                     temperature=0.0,
-                    max_tokens=1000,
+                    max_tokens=4096,
                     include_seed=True,
                 )
                 scores_dict = parse_judge_scores_creative(judge_resp)
@@ -190,17 +204,14 @@ class CreativeWritingTask:
                 data_block["judge_scores"] = {}
                 data_block["raw_judge_text"] = f"[ERROR: {e}]"
 
-        # ---------- new status decision ----------
         all_scored = all(
             block.get("generation_failed")
             or bool(block.get("judge_scores"))
             for block in self.results_by_modifier.values()
         )
-
         self.status = "completed" if all_scored else "generated"
-        # -----------------------------------------
 
-        if runs_file and run_key:
+        if write_to_disk and runs_file and run_key:
             update_run_data(
                 runs_file,
                 run_key,
@@ -210,6 +221,7 @@ class CreativeWritingTask:
                     }
                 },
             )
+
 
 
     def to_dict(self) -> Dict[str, Any]:
