@@ -4,254 +4,76 @@ Welcome to the Creative Writing Benchmark v3 repository! This benchmark evaluate
 
 **This fork adds a modular Narrative Pipeline** that replaces single-shot generation with a multi-step process (warmup → structural beats → story), enabling systematic ablation studies.
 
-## Narrative Pipeline: Architecture and Ablation Guide
+## Narrative Pipeline
 
-The pipeline is defined in `core/narrative_pipeline.py`. Each step is an independent object that can be added, removed, replaced, or configured.
-
-### Pipeline Architecture
+This fork adds an optional multi-step generation pipeline: **warmup → structural beats → story**. Enable it with `--narrative-pipeline`.
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Step 0: Warmup  │ ──► │  Step 1: Beats    │ ──► │  Step 2: Story   │
-│  (beat sheet     │     │  (adapted to-do   │     │  (final output   │
-│   from reference)│     │   list for prompt) │     │   for judging)   │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
+Step 0: Warmup          Step 1: Beats           Step 2: Story
+(beat sheet from        (adapted to-do list     (final output
+ a reference story)      for the prompt)          for judging)
 ```
 
-All steps share a `PipelineContext` that accumulates outputs. Each step can read any previous step's output by name.
+### Pipeline CLI Flags
 
-### Available Steps
-
-| Step Class | Name | API Call? | Description |
-|---|---|---|---|
-| `WarmupStep` | warmup | No | Select from pre-computed beat sheet templates |
-| `GenerateWarmupStep` | warmup | Yes | Generate beat sheet from famous story title (20 titles) |
-| `GenerateWarmupFromTextStep` | warmup | Yes | Generate beat sheet from full story text (20 NYer stories) |
-| `BeatSheetStep` | beats | Yes | Adapt warmup beats to the writing prompt |
-| `StoryWriteStep` | story | Yes | Write the story from structural beats |
-| `VanillaStep` | story | Yes | Single-shot generation (original benchmark behavior) |
-
-### Pre-computed Warmup Templates
-
-The file `data/narrative_step0_templates.json` contains 6 pre-generated structural beat sheets, each extracted from a different reference story using the `c1_specific` prompt style (7 scene-level beats with named techniques). These were generated once via `llm-fiction-writing/step0_experiments.py` and are reused across all benchmark runs for reproducibility and cost savings (no API call needed at step 0).
-
-| source_id | Type | Reference Story |
-|---|---|---|
-| A1 | Famous | The Ones Who Walk Away from Omelas (Le Guin) |
-| A2 | Famous | The Lottery (Jackson) |
-| A4 | Famous | The Yellow Wallpaper (Gilman) |
-| B1 | Contemporary | The Fellow (New Yorker) |
-| B2 | Contemporary | Poor Girl (New Yorker) |
-| B3 | Contemporary | The Dog (New Yorker) |
-
-One template is randomly sampled per generation task. To fix a specific template for ablation, use `source_id` when constructing the pipeline (see ablation examples below).
-
-### Preset Pipelines
-
-```python
-from core.narrative_pipeline import *
-
-templates = {"A1": "...", "B1": "..."}  # pre-computed step0 data
-
-# Full 3-step pipeline with pre-computed warmups
-make_full_pipeline(templates)
-
-# Full 3-step with live warmup generation (no templates needed)
-make_live_warmup_pipeline(style="c1_specific")
-
-# Ablate warmup: beats generated from scratch
-make_no_warmup_pipeline()
-
-# Ablate beats: warmup only, then vanilla story
-make_no_beats_pipeline(templates)
-
-# Vanilla: equivalent to standard benchmark
-make_vanilla_pipeline()
-```
-
-### Ablation Examples
-
-To run ablation experiments, construct pipelines programmatically. Here are common configurations:
-
-```python
-from core.narrative_pipeline import *
-import json
-
-# Load pre-computed templates
-with open("data/narrative_step0_templates.json") as f:
-    raw = json.load(f)
-    templates = {e["source_id"]: e["step0"] for e in raw}
-
-# ── Ablation 1: Remove warmup (step 0) ──────────────────────────
-# Beats are generated from scratch without a reference beat sheet
-pipeline = NarrativePipeline([
-    BeatSheetStep(),          # no warmup context available
-    StoryWriteStep(),
-])
-
-# ── Ablation 2: Remove beats (step 1) ───────────────────────────
-# Warmup is loaded but goes unused; story is vanilla
-pipeline = NarrativePipeline([
-    WarmupStep(templates=templates),
-    StoryWriteStep(),         # no beats context → falls back to vanilla prompt
-])
-
-# ── Ablation 3: Short beat list ──────────────────────────────────
-pipeline = NarrativePipeline([
-    WarmupStep(templates=templates),
-    BeatSheetStep(max_beats=3),   # "Limit to exactly 3 beats."
-    StoryWriteStep(),
-])
-
-# ── Ablation 4: Fix warmup to a single reference story ──────────
-pipeline = NarrativePipeline([
-    WarmupStep(templates=templates, source_id="A1"),  # always Le Guin
-    BeatSheetStep(),
-    StoryWriteStep(),
-])
-
-# ── Ablation 5: Live warmup with different styles ────────────────
-# c1_specific (default): 7 scene beats + techniques + memorability
-# baseline: 5-point beat sheet
-# c2_abstract: 3 universal archetypal moves
-pipeline = NarrativePipeline([
-    GenerateWarmupStep(style="baseline"),
-    BeatSheetStep(),
-    StoryWriteStep(),
-])
-
-# ── Ablation 6: Live warmup with a specific reference ────────────
-pipeline = NarrativePipeline([
-    GenerateWarmupStep(style="c1_specific", reference_id="A8"),  # Rashōmon
-    BeatSheetStep(),
-    StoryWriteStep(),
-])
-
-# ── Ablation 7: Custom prompts ──────────────────────────────────
-pipeline = NarrativePipeline([
-    GenerateWarmupStep(
-        custom_prompt='Analyze the narrative structure of "{ref}". '
-                      'Focus on how tension is built and released.'
-    ),
-    BeatSheetStep(
-        custom_instruction=(
-            "Reference beats:\n---\n{warmup}\n---\n\n"
-            "Create a to-do list for this story:\n{writing_prompt}\n"
-            "Limit to {max_beats} beats."
-        ),
-        max_beats=5,
-    ),
-    StoryWriteStep(),
-])
-
-# ── Vanilla baseline (no pipeline) ──────────────────────────────
-pipeline = NarrativePipeline([
-    VanillaStep(),
-])
-```
-
-### Running Ablations via the Benchmark
-
-To run an ablation through the full benchmark pipeline (with judging and Elo), modify `core/benchmark.py` where the pipeline is constructed, or write a short script:
-
-```python
-from core.benchmark import run_eq_bench_creative
-from core.narrative_pipeline import *
-
-# This script bypasses --narrative-pipeline CLI arg and injects
-# the pipeline directly. See benchmark.py for the full argument list.
-
-# Example: run with no-warmup ablation
-# You would need to modify benchmark.py to accept a pipeline object
-# directly, or construct it in the narrative_pipeline loading section.
-```
-
-Alternatively, for quick ablation testing, use the CLI with different `--narrative-pipeline` files (each containing different pre-computed templates) and different `--run-id` values to keep results separate.
-
-### GenerateWarmupStep: Reference Stories
-
-When using `GenerateWarmupStep` (live warmup generation), one of 20 famous short stories is randomly selected as the reference. The default pool spans diverse narrative traditions:
-
-| ID | Story | Technique Focus |
-|---|---|---|
-| A1 | The Ones Who Walk Away from Omelas (Le Guin) | Moral philosophy |
-| A2 | The Lottery (Jackson) | Suspense/Reveal |
-| A3 | Hills Like White Elephants (Hemingway) | Subtext/Dialogue |
-| A4 | The Yellow Wallpaper (Gilman) | Unreliable narrator |
-| A5 | A Good Man Is Hard to Find (O'Connor) | Violence/Grace |
-| A6 | The Garden of Forking Paths (Borges) | Metafiction/Structure |
-| A7 | The Metamorphosis (Kafka) | Surrealism/Premise |
-| A8 | Rashomon (Akutagawa) | Subjectivity/Perspective |
-| A9 | The Necklace (Maupassant) | Irony/Pacing |
-| A10 | The Overcoat (Gogol) | Pathos/Character |
-| A11 | Girl (Kincaid) | Form/Prose Rhythm |
-| A12 | Axolotl (Cortazar) | Magical Realism/Identity |
-| A13 | Cathedral (Carver) | Minimalism/Dirty Realism |
-| A14 | The Lady with the Dog (Chekhov) | Modern Realism |
-| A15 | Araby (Joyce) | Epiphany/Coming-of-age |
-| A16 | A Very Old Man with Enormous Wings (Marquez) | Imagery |
-| A17 | Sonny's Blues (Baldwin) | Voice/Narrative Soul |
-| A18 | The Fifth Story (Lispector) | Narrative Experimentation |
-| A19 | A Madman's Diary (Lu Xun) | Allegory/Social Critique |
-| A20 | The Bear Came Over the Mountain (Munro) | Handling of Time/Memory |
-
-### Warmup Styles
-
-Three prompt styles are available for `GenerateWarmupStep` and `GenerateWarmupFromTextStep`:
-
-| Style | Description |
-|---|---|
-| `c1_specific` (default) | 7 scene-level beats with named techniques and memorability analysis |
-| `baseline` | 5-point structural beat sheet |
-| `c2_abstract` | 3 universal archetypal moves (no plot specifics) |
-
-### Step 0 Modes
-
-| Mode | What the LLM receives | API call? |
-|---|---|---|
-| `title` | A famous story title (LLM uses training knowledge) | Yes |
-| `fulltext` | The full text of a NYer story (20 stories, 1000-2600 words each) | Yes |
-| `precomputed` | Nothing — selects from 6 pre-generated templates | No |
-| `none` | Skipped entirely | No |
-
-### CLI-Based Ablation (via `narrative_ablation/`)
-
-The companion project at `../narrative_ablation/` provides a CLI-driven interface where **all pipeline settings are command-line flags**:
+All pipeline settings are command-line flags:
 
 ```bash
-cd ../narrative_ablation/
-
 # Full pipeline: title warmup → beats → story
-python generate_stories.py --run-id full --step0 title --step1 default
+python creative_writing_bench.py \
+    --test-model "anthropic/claude-opus-4-6" --judge-model "anthropic/claude-sonnet-4" \
+    --step0 title --run-id full --iterations 3 --threads 4
 
-# Vanilla: no pipeline at all
-python generate_stories.py --run-id vanilla --step1 none
+# Full pipeline: pre-computed warmup (cheapest, no API call for step 0)
+python creative_writing_bench.py \
+    --test-model "anthropic/claude-opus-4-6" --judge-model "anthropic/claude-sonnet-4" \
+    --step0 precomputed --run-id precomp --iterations 3 --threads 4
+
+# Full pipeline: full-text warmup from story corpus
+python creative_writing_bench.py \
+    --test-model "anthropic/claude-opus-4-6" --judge-model "anthropic/claude-sonnet-4" \
+    --step0 fulltext --step0-sources-dir /path/to/stories --run-id fulltext
 
 # Ablate warmup: beats from scratch
-python generate_stories.py --run-id no_warmup --step0 none
+python creative_writing_bench.py \
+    --test-model "anthropic/claude-opus-4-6" --judge-model "anthropic/claude-sonnet-4" \
+    --step0 none --run-id no_warmup
 
-# Full-text warmup from NYer stories
-python generate_stories.py --run-id fulltext --step0 fulltext
+# Vanilla (no pipeline, leaderboard-comparable)
+python creative_writing_bench.py \
+    --test-model "anthropic/claude-opus-4-6" --judge-model "anthropic/claude-sonnet-4" \
+    --run-id vanilla
 
 # Short beats (3 only)
-python generate_stories.py --run-id short3 --step1-max-beats 3
+... --step0 title --step1-max-beats 3 --run-id short
 
-# Fix warmup to always use Le Guin
-python generate_stories.py --run-id fixed_leguin --step0-source A1
+# Fixed warmup source
+... --step0 title --step0-source A1 --run-id fixed_leguin
 
 # Abstract warmup style
-python generate_stories.py --run-id abstract --step0-style c2_abstract
+... --step0 title --step0-style c2_abstract --run-id abstract
 
-# Pre-computed templates (no API call for step 0)
-python generate_stories.py --run-id precomp --step0 precomputed
-
-# Custom step1 prompts from JSON file
-python generate_stories.py --run-id custom --step1 my_prompts.json
+# Custom step1 prompts
+... --step0 title --step1 my_prompts.json --run-id custom
 ```
 
-**Key rule:** `--step1 none` automatically skips step 0 and makes step 2 vanilla. This is enforced by the code — you cannot have a warmup without beats.
+Add `--no-elo` to any command to skip pairwise matchups (rubric score only).
 
-The generated stories can then be evaluated via 100-ending geometry + LLM judge (see `narrative_ablation/README.md`).
+**Key rule:** `--step1 none` forces vanilla mode (step 0 auto-skipped). If no `--step0` flag is given, the pipeline is disabled (vanilla).
+
+| Flag | Options | Default |
+|---|---|---|
+| `--step0` | `title`, `fulltext`, `precomputed`, `none` | *(not set = vanilla)* |
+| `--step0-style` | `baseline`, `c1_specific`, `c2_abstract` | `c1_specific` |
+| `--step0-source` | Any source ID (e.g., `A1`, `00015`) | random |
+| `--step0-templates` | Path to JSON | `data/narrative_step0_templates.json` |
+| `--step0-sources-dir` | Path to directory of .txt files | *(required for fulltext)* |
+| `--step1` | `default`, `none`, or path to JSON | `default` |
+| `--step1-max-beats` | Integer | *(no limit)* |
+
+### Pipeline Implementation
+
+The pipeline is defined in `core/narrative_pipeline.py`. Each step is a `PipelineStep` object with access to all prior step outputs via `PipelineContext`. See the module docstring for programmatic usage and custom step construction.
 
 ---
 
@@ -292,21 +114,6 @@ The generated stories can then be evaluated via 100-ending geometry + LLM judge 
     unzip creative_bench_runs.zip
     unzip elo_results.zip
     ```
-
-### Running with the Narrative Pipeline
-
-```bash
-python creative_writing_bench.py \
-    --test-model "anthropic/claude-opus-4-6" \
-    --judge-model "anthropic/claude-sonnet-4" \
-    --runs-file "creative_bench_runs.json" \
-    --narrative-pipeline "data/narrative_step0_templates.json" \
-    --run-id "narrative_run" \
-    --iterations 3 \
-    --threads 4
-```
-
-Add `--no-elo` to skip pairwise matchups (faster, cheaper, rubric score only).
 
 ### Running the Benchmark (Standard / Vanilla)
 

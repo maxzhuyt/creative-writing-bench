@@ -185,7 +185,8 @@ def run_eq_bench_creative(
     save_interval: int = 2,
     iterations: int = 1,
     run_elo: bool = True,
-    narrative_pipeline: Optional[str] = None
+    narrative_pipeline: Optional[str] = None,
+    narrative_pipeline_obj = None,
 ) -> str:
     """
     Main function to run the creative writing benchmark.
@@ -245,9 +246,10 @@ def run_eq_bench_creative(
     creative_prompts = load_json_file(creative_prompts_file)
 
     # --- Load narrative pipeline (if enabled) ---
-    from core.narrative_pipeline import make_full_pipeline, make_vanilla_pipeline
-    pipeline = None
-    if narrative_pipeline:
+    pipeline = narrative_pipeline_obj  # pre-built from CLI flags
+    if pipeline is None and narrative_pipeline:
+        # Legacy path: --narrative-pipeline <file>
+        from core.narrative_pipeline import make_full_pipeline
         if not os.path.exists(narrative_pipeline):
             raise FileNotFoundError(f"Narrative pipeline step0 file not found: {narrative_pipeline}")
         raw_step0 = load_json_file(narrative_pipeline)
@@ -258,6 +260,8 @@ def run_eq_bench_creative(
                 narrative_step0_data[sid] = entry["step0"]
         pipeline = make_full_pipeline(narrative_step0_data)
         logging.info(f"Narrative pipeline enabled: loaded {len(narrative_step0_data)} step0 templates from {narrative_pipeline}")
+    elif pipeline is not None:
+        logging.info(f"Narrative pipeline: {pipeline}")
 
     # --- Build API clients ---
     api_clients = {

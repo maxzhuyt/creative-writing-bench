@@ -112,12 +112,46 @@ def main():
     parser.add_argument("--judge-prompt-file", default="data/creative_writing_judging_prompt.txt")
     parser.add_argument("--save-interval", type=int, default=2, help="How often to save partial progress.")
     parser.add_argument("--iterations", type=int, default=1, help="How many iteration passes to run (one seed per iteration).")
-    # --- New Argument ---
+    # --- ELO ---
     parser.add_argument("--no-elo", action="store_true", default=False, help="Disable the ELO analysis step.")
+
+    # --- Narrative pipeline ---
     parser.add_argument("--narrative-pipeline", default=None,
-                        help="Path to step0_results JSON file. Enables 3-step narrative pipeline mode.")
+                        help="(Legacy) Path to step0 templates JSON. Equivalent to --step0 precomputed --step0-templates <path>.")
+
+    pipe = parser.add_argument_group("Pipeline configuration")
+    pipe.add_argument("--step0", type=str, default=None,
+                      choices=["title", "fulltext", "precomputed", "none"],
+                      help=("Step 0 warmup mode. "
+                            "'title': generate beats from famous story title. "
+                            "'fulltext': generate beats from full story text. "
+                            "'precomputed': use pre-generated templates. "
+                            "'none': skip warmup. "
+                            "If omitted and --narrative-pipeline is set, defaults to 'precomputed'. "
+                            "If both omitted, no pipeline (vanilla)."))
+    pipe.add_argument("--step0-style", type=str, default="c1_specific",
+                      choices=["baseline", "c1_specific", "c2_abstract"],
+                      help="Step 0 prompt style (default: c1_specific)")
+    pipe.add_argument("--step0-source", type=str, default=None,
+                      help="Fix a specific source ID for step0 (e.g., 'A1'). Omit to randomly sample.")
+    pipe.add_argument("--step0-templates", type=str, default="data/narrative_step0_templates.json",
+                      help="JSON file for precomputed mode")
+    pipe.add_argument("--step0-sources-dir", type=str, default=None,
+                      help="Directory of .txt files for fulltext mode")
+    pipe.add_argument("--step1", type=str, default="default",
+                      help=("Step 1 beat generation. "
+                            "'default': standard beat adaptation. "
+                            "'none': skip beats (vanilla). "
+                            "Or path to JSON with custom prompts."))
+    pipe.add_argument("--step1-max-beats", type=int, default=None,
+                      help="Limit step1 to N beats")
 
     args = parser.parse_args()
+
+    # Resolve legacy --narrative-pipeline flag
+    if args.narrative_pipeline and args.step0 is None:
+        args.step0 = "precomputed"
+        args.step0_templates = args.narrative_pipeline
     setup_logging(get_verbosity(args.verbosity))
 
     # Hook signals
@@ -125,6 +159,53 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     run_elo_flag = not args.no_elo # Determine if ELO should run
+
+    # --- Build narrative pipeline from CLI flags ---
+    pipeline = None
+    if args.step0 is not None:
+        from core.narrative_pipeline import (
+            NarrativePipeline, WarmupStep, GenerateWarmupStep,
+            GenerateWarmupFromTextStep, BeatSheetStep, StoryWriteStep, VanillaStep,
+        )
+        from utils.file_io import load_json_file as _load
+
+        if args.step1 == "none":
+            pipeline = NarrativePipeline([VanillaStep()])
+        else:
+            steps = []
+            # Step 0
+            if args.step0 == "title":
+                steps.append(GenerateWarmupStep(
+                    style=args.step0_style, reference_id=args.step0_source))
+            elif args.step0 == "fulltext":
+                steps.append(GenerateWarmupFromTextStep(
+                    style=args.step0_style, sources_dir=args.step0_sources_dir,
+                    fixed_source_id=args.step0_source))
+            elif args.step0 == "precomputed":
+                raw = _load(args.step0_templates)
+                templates = {}
+                for e in raw:
+                    sid = e["source_id"]
+                    if sid not in templates and e.get("step0"):
+                        templates[sid] = e["step0"]
+                steps.append(WarmupStep(templates=templates, source_id=args.step0_source))
+            # step0 == "none": no warmup step
+
+            # Step 1
+            if args.step1 == "default":
+                steps.append(BeatSheetStep(max_beats=args.step1_max_beats))
+            elif args.step1 != "none":
+                import json
+                with open(args.step1) as f:
+                    custom = json.load(f)
+                steps.append(BeatSheetStep(
+                    custom_instruction=custom[0], max_beats=args.step1_max_beats))
+
+            # Step 2
+            steps.append(StoryWriteStep())
+            pipeline = NarrativePipeline(steps)
+
+        logging.info(f"Narrative pipeline: {pipeline}")
 
     run_key = run_eq_bench_creative(
         test_model=args.test_model,
@@ -139,8 +220,8 @@ def main():
         redo_judging=args.redo_judging,
         save_interval=args.save_interval,
         iterations=args.iterations,
-        run_elo=run_elo_flag, # Pass the flag
-        narrative_pipeline=args.narrative_pipeline
+        run_elo=run_elo_flag,
+        narrative_pipeline_obj=pipeline,
     )
 
     logging.info(f"Creative writing benchmark completed. Run key: {run_key}")
