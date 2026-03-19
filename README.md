@@ -297,7 +297,7 @@ The generated stories can then be evaluated via 100-ending geometry + LLM judge 
 
 ```bash
 python creative_writing_bench.py \
-    --test-model "anthropic/claude-sonnet-4-6" \
+    --test-model "anthropic/claude-opus-4-6" \
     --judge-model "anthropic/claude-sonnet-4" \
     --runs-file "creative_bench_runs.json" \
     --narrative-pipeline "data/narrative_step0_templates.json" \
