@@ -163,13 +163,13 @@ DEFAULT_REFERENCES = [
 
 class GenerateWarmupStep(PipelineStep):
     """
-    Step 0 (live): Generate a structural beat sheet via an API call.
-    Use this when no pre-computed templates are available.
+    Step 0 (live, title mode): Generate a structural beat sheet via an API call
+    using only a famous story title (the LLM relies on its training knowledge).
 
     Args:
         style: prompt style — "c1_specific" (default), "baseline", or "c2_abstract".
         references: list of {"id": str, "ref": str} dicts. One is randomly
-                    selected per call. Defaults to 5 famous short stories.
+                    selected per call. Defaults to 20 famous short stories.
         reference_id: if set, always use this specific reference (for ablation).
         custom_prompt: override the prompt entirely. Use {ref} as placeholder
                        for the reference story name.
@@ -240,6 +240,101 @@ class GenerateWarmupStep(PipelineStep):
         if self.custom_prompt:
             parts.append("custom_prompt=...")
         return f"GenerateWarmupStep({', '.join(parts)})"
+
+
+class GenerateWarmupFromTextStep(PipelineStep):
+    """
+    Step 0 (live, full-text mode): Generate a structural beat sheet from the
+    full text of a reference story (e.g., NYer corpus stories).
+
+    The LLM reads the complete story and extracts structural patterns.
+
+    Args:
+        style: prompt style — "c1_specific" (default), "baseline", or "c2_abstract".
+        sources_dir: directory containing .txt story files.
+        source_ids: list of filename stems to use (e.g., ["00015", "00066"]).
+                    If None, uses all .txt files in sources_dir.
+        fixed_source_id: if set, always use this specific source.
+    """
+    name = "warmup"
+
+    def __init__(
+        self,
+        style: str = "c1_specific",
+        sources_dir: Optional[str] = None,
+        source_ids: Optional[List[str]] = None,
+        fixed_source_id: Optional[str] = None,
+    ):
+        import os
+        self.style = style
+        self.fixed_source_id = fixed_source_id
+        self.sources_dir = sources_dir
+
+        # Load story texts
+        self.texts: Dict[str, str] = {}
+        if sources_dir and os.path.isdir(sources_dir):
+            for fname in sorted(os.listdir(sources_dir)):
+                if not fname.endswith(".txt"):
+                    continue
+                sid = fname.replace(".txt", "")
+                if source_ids and sid not in source_ids:
+                    continue
+                fpath = os.path.join(sources_dir, fname)
+                with open(fpath, "r", encoding="utf-8") as f:
+                    self.texts[sid] = f.read().strip().lstrip("\ufeff")
+
+        if not self.texts:
+            raise ValueError(f"No story texts found in {sources_dir}")
+
+    def _build_prompt(self, story_text: str) -> str:
+        preamble = f"Here is a short story:\n\n---\n{story_text}\n---\n\n"
+
+        if self.style == "baseline":
+            return (
+                f"{preamble}Create a 5-point structural beat sheet for this story. "
+                "For each beat, give it a short name and describe the narrative function "
+                "it serves — what the reader experiences and why."
+            )
+        elif self.style == "c1_specific":
+            return (
+                f"{preamble}Using this story as your reference, extract 7 scene-level beats. "
+                "For each beat describe: (1) the concrete action, (2) the specific narrative "
+                "technique used, and (3) identify what made it memorable. What narrative trick, "
+                "thematic resonance, or structural choice made each story work?"
+            )
+        elif self.style == "c2_abstract":
+            return (
+                f"{preamble}Using this story as your reference, identify 3 universal "
+                "narrative moves that make this story work. Be fully abstract and archetypal — "
+                "do not mention any specific characters, plot events, or details from the story. "
+                "Each move should be described in terms directly transferable to any story in "
+                "any genre."
+            )
+        else:
+            raise ValueError(f"Unknown style: {self.style}")
+
+    def __call__(self, ctx: PipelineContext, api, model: str, **kwargs) -> str:
+        if self.fixed_source_id:
+            chosen_id = self.fixed_source_id
+        else:
+            chosen_id = random.choice(list(self.texts.keys()))
+
+        story_text = self.texts[chosen_id]
+        prompt = self._build_prompt(story_text)
+
+        output = api.generate(
+            model, prompt,
+            temperature=0.7, max_tokens=4000, min_p=0.1, include_seed=False
+        )
+        ctx.set(self.name, output, source_id=chosen_id, style=self.style,
+                mode="full_text")
+        return output
+
+    def __repr__(self):
+        parts = [f"style={self.style!r}", f"n_sources={len(self.texts)}"]
+        if self.fixed_source_id:
+            parts.append(f"fixed={self.fixed_source_id!r}")
+        return f"GenerateWarmupFromTextStep({', '.join(parts)})"
 
 
 class BeatSheetStep(PipelineStep):
@@ -437,9 +532,22 @@ def make_no_beats_pipeline(step0_data: Dict[str, str], source_id: Optional[str] 
 def make_live_warmup_pipeline(style: str = "c1_specific",
                               reference_id: Optional[str] = None,
                               max_beats: Optional[int] = None) -> NarrativePipeline:
-    """Full 3-step with live step0 generation (no pre-computed templates needed)."""
+    """Full 3-step with live step0 generation from title (no pre-computed templates)."""
     return NarrativePipeline([
         GenerateWarmupStep(style=style, reference_id=reference_id),
+        BeatSheetStep(max_beats=max_beats),
+        StoryWriteStep(),
+    ])
+
+
+def make_fulltext_warmup_pipeline(style: str = "c1_specific",
+                                  sources_dir: Optional[str] = None,
+                                  fixed_source_id: Optional[str] = None,
+                                  max_beats: Optional[int] = None) -> NarrativePipeline:
+    """Full 3-step with live step0 from full story text."""
+    return NarrativePipeline([
+        GenerateWarmupFromTextStep(style=style, sources_dir=sources_dir,
+                                   fixed_source_id=fixed_source_id),
         BeatSheetStep(max_beats=max_beats),
         StoryWriteStep(),
     ])

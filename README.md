@@ -25,7 +25,8 @@ All steps share a `PipelineContext` that accumulates outputs. Each step can read
 | Step Class | Name | API Call? | Description |
 |---|---|---|---|
 | `WarmupStep` | warmup | No | Select from pre-computed beat sheet templates |
-| `GenerateWarmupStep` | warmup | Yes | Generate a beat sheet live via API call |
+| `GenerateWarmupStep` | warmup | Yes | Generate beat sheet from famous story title (20 titles) |
+| `GenerateWarmupFromTextStep` | warmup | Yes | Generate beat sheet from full story text (20 NYer stories) |
 | `BeatSheetStep` | beats | Yes | Adapt warmup beats to the writing prompt |
 | `StoryWriteStep` | story | Yes | Write the story from structural beats |
 | `VanillaStep` | story | Yes | Single-shot generation (original benchmark behavior) |
@@ -196,13 +197,61 @@ When using `GenerateWarmupStep` (live warmup generation), one of 20 famous short
 
 ### Warmup Styles
 
-Three prompt styles are available for `GenerateWarmupStep`:
+Three prompt styles are available for `GenerateWarmupStep` and `GenerateWarmupFromTextStep`:
 
 | Style | Description |
 |---|---|
 | `c1_specific` (default) | 7 scene-level beats with named techniques and memorability analysis |
 | `baseline` | 5-point structural beat sheet |
 | `c2_abstract` | 3 universal archetypal moves (no plot specifics) |
+
+### Step 0 Modes
+
+| Mode | What the LLM receives | API call? |
+|---|---|---|
+| `title` | A famous story title (LLM uses training knowledge) | Yes |
+| `fulltext` | The full text of a NYer story (20 stories, 1000-2600 words each) | Yes |
+| `precomputed` | Nothing — selects from 6 pre-generated templates | No |
+| `none` | Skipped entirely | No |
+
+### CLI-Based Ablation (via `narrative_ablation/`)
+
+The companion project at `../narrative_ablation/` provides a CLI-driven interface where **all pipeline settings are command-line flags**:
+
+```bash
+cd ../narrative_ablation/
+
+# Full pipeline: title warmup → beats → story
+python generate_stories.py --run-id full --step0 title --step1 default
+
+# Vanilla: no pipeline at all
+python generate_stories.py --run-id vanilla --step1 none
+
+# Ablate warmup: beats from scratch
+python generate_stories.py --run-id no_warmup --step0 none
+
+# Full-text warmup from NYer stories
+python generate_stories.py --run-id fulltext --step0 fulltext
+
+# Short beats (3 only)
+python generate_stories.py --run-id short3 --step1-max-beats 3
+
+# Fix warmup to always use Le Guin
+python generate_stories.py --run-id fixed_leguin --step0-source A1
+
+# Abstract warmup style
+python generate_stories.py --run-id abstract --step0-style c2_abstract
+
+# Pre-computed templates (no API call for step 0)
+python generate_stories.py --run-id precomp --step0 precomputed
+
+# Custom step1 prompts from JSON file
+python generate_stories.py --run-id custom --step1 my_prompts.json
+```
+
+**Key rule:** `--step1 none` automatically skips step 0 and makes step 2 vanilla. This is enforced by the code — you cannot have a warmup without beats.
+
+The generated stories can then be evaluated via 100-ending geometry + LLM judge (see `narrative_ablation/README.md`).
 
 ---
 
