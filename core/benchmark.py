@@ -184,7 +184,8 @@ def run_eq_bench_creative(
     redo_judging: bool = False,
     save_interval: int = 2,
     iterations: int = 1,
-    run_elo: bool = True
+    run_elo: bool = True,
+    narrative_pipeline: Optional[str] = None
 ) -> str:
     """
     Main function to run the creative writing benchmark.
@@ -242,6 +243,21 @@ def run_eq_bench_creative(
     if not os.path.exists(creative_prompts_file):
         raise FileNotFoundError(f"Creative prompts file not found: {creative_prompts_file}")
     creative_prompts = load_json_file(creative_prompts_file)
+
+    # --- Load narrative pipeline (if enabled) ---
+    from core.narrative_pipeline import make_full_pipeline, make_vanilla_pipeline
+    pipeline = None
+    if narrative_pipeline:
+        if not os.path.exists(narrative_pipeline):
+            raise FileNotFoundError(f"Narrative pipeline step0 file not found: {narrative_pipeline}")
+        raw_step0 = load_json_file(narrative_pipeline)
+        narrative_step0_data = {}
+        for entry in raw_step0:
+            sid = entry["source_id"]
+            if sid not in narrative_step0_data and entry.get("step0"):
+                narrative_step0_data[sid] = entry["step0"]
+        pipeline = make_full_pipeline(narrative_step0_data)
+        logging.info(f"Narrative pipeline enabled: loaded {len(narrative_step0_data)} step0 templates from {narrative_pipeline}")
 
     # --- Build API clients ---
     api_clients = {
@@ -323,6 +339,7 @@ def run_eq_bench_creative(
                             f"{resumed_task.judge_model} -> {judge_model}"
                         )
                         resumed_task.judge_model = judge_model
+                    resumed_task.pipeline = pipeline or make_vanilla_pipeline()
 
                     if resumed_task.status in ("completed", "judged"):
                         missing = any(
@@ -350,7 +367,8 @@ def run_eq_bench_creative(
                     seed_modifiers=[iteration_seed],
                     iteration_index=i,
                     test_model=test_model,
-                    judge_model=judge_model
+                    judge_model=judge_model,
+                    pipeline=pipeline
                 )
                 tasks_to_run.append(new_task)
 

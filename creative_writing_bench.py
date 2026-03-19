@@ -114,6 +114,8 @@ def main():
     parser.add_argument("--iterations", type=int, default=1, help="How many iteration passes to run (one seed per iteration).")
     # --- New Argument ---
     parser.add_argument("--no-elo", action="store_true", default=False, help="Disable the ELO analysis step.")
+    parser.add_argument("--narrative-pipeline", default=None,
+                        help="Path to step0_results JSON file. Enables 3-step narrative pipeline mode.")
 
     args = parser.parse_args()
     setup_logging(get_verbosity(args.verbosity))
@@ -137,7 +139,8 @@ def main():
         redo_judging=args.redo_judging,
         save_interval=args.save_interval,
         iterations=args.iterations,
-        run_elo=run_elo_flag # Pass the flag
+        run_elo=run_elo_flag, # Pass the flag
+        narrative_pipeline=args.narrative_pipeline
     )
 
     logging.info(f"Creative writing benchmark completed. Run key: {run_key}")

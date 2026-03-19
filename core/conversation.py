@@ -2,6 +2,8 @@ import time
 import logging
 from typing import Dict, Any, List, Optional
 
+from core.narrative_pipeline import NarrativePipeline, make_vanilla_pipeline
+
 class CreativeWritingTask:
     """
     Stores a single creative writing prompt, plus seed modifiers. For each seed modifier,
@@ -16,7 +18,8 @@ class CreativeWritingTask:
         seed_modifiers: List[str],
         iteration_index: int,
         test_model: str,
-        judge_model: str
+        judge_model: str,
+        pipeline: Optional[NarrativePipeline] = None
     ):
         self.prompt_id = prompt_id
         self.base_prompt = base_prompt
@@ -24,6 +27,7 @@ class CreativeWritingTask:
         self.iteration_index = iteration_index
         self.test_model = test_model
         self.judge_model = judge_model
+        self.pipeline = pipeline or make_vanilla_pipeline()
 
         self.status = "initialized"
         self.start_time = None
@@ -36,7 +40,7 @@ class CreativeWritingTask:
 
     def generate_creative_piece(self, api_clients, runs_file=None, run_key=None, save_interval=2):
         """
-        For each seed modifier, if not already done, call the test model with base_prompt + seed.
+        For each seed modifier, if not already done, run the pipeline to generate text.
         Retry up to 3 times if output is too short, then discard if still failing.
         """
         self.status = "in_progress"
@@ -51,24 +55,21 @@ class CreativeWritingTask:
                 continue
 
             final_prompt = self.base_prompt.replace("<SEED>", seed_modifier)
-            
+
             # Initialize result block
             self.results_by_modifier[seed_modifier] = {}
-            
+
             # Try up to 3 times for short responses
             max_attempts = 3
             for attempt in range(1, max_attempts + 1):
                 try:
-                    system_msg = """Write with a style that embodies these qualities:
-- prefer to use longer sentences (in a natural way; mix it up)
-- don't use much dialogue
-- prefer fewer commas
-- prefer larger words
-"""
-                    system_msg = None
-                    style_bias = True
-                    response = test_api.generate(self.test_model, final_prompt, temperature=0.7, max_tokens=4000, min_p=0.1, include_seed=False)
-                    
+                    response, ctx_dict = self.pipeline.run(
+                        final_prompt, test_api, self.test_model
+                    )
+
+                    # Store all intermediate outputs from the pipeline
+                    self.results_by_modifier[seed_modifier].update(ctx_dict)
+
                     # Check if response is too short
                     if len(response.strip()) < 500:
                         print('----')
@@ -86,12 +87,12 @@ class CreativeWritingTask:
                             self.results_by_modifier[seed_modifier]["generation_failed"] = True
                             self.results_by_modifier[seed_modifier]["error_message"] = f"Text too short after {max_attempts} attempts"
                             break
-                    
+
                     # Success - store the valid response and break retry loop
                     self.results_by_modifier[seed_modifier]["model_response"] = response.strip()
                     self.results_by_modifier[seed_modifier]["generation_failed"] = False
                     break
-                    
+
                 except Exception as e:
                     if attempt < max_attempts:
                         logging.warning(f"Generation error, retry {attempt}/{max_attempts} "
