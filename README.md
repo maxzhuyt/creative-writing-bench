@@ -4,124 +4,6 @@ Welcome to the Creative Writing Benchmark v3 repository! This benchmark evaluate
 
 **This fork adds a modular Narrative Pipeline** that replaces single-shot generation with a multi-step process (warmup → structural beats → story), enabling systematic ablation studies.
 
-## How the Benchmark Works
-
-The evaluation process involves several steps:
-
-1.  **Generation:** The model under test generates responses to 32 distinct writing prompts across 3 iterations (96 items total). Generation uses a temperature of 0.7 and min_p of 0.1 to encourage creativity while maintaining some consistency.
-2.  **Rubric Scoring:** Each generated piece is individually assessed by a judge model (Anthropic's Claude Sonnet 4 recommended for leaderboard parity) against a comprehensive rubric.
-3.  **Initial Elo Inference:** The aggregate rubric score is used to estimate an initial Elo rating for the model being evaluated relative to existing models.
-4.  **Pairwise Matchups (Sparse):** The model is compared against neighboring models on the leaderboard using pairwise matchups. The judge determines the better output across several criteria, assigning a score margin (using `+` symbols).
-5.  **Glicko Calculation:** Elo scores are calculated using the Glicko-2 rating system, modified to incorporate the win margin (number of `+`'s) from pairwise comparisons. This process loops until model positions stabilize.
-6.  **Pairwise Matchups (Comprehensive):** More thorough pairwise comparisons are conducted with the model's final neighbors.
-7.  **Final Elo Calculation:** The definitive leaderboard Elo score is computed based on all comparisons.
-8.  **Normalization:** Raw Elo scores are normalized by anchoring specific models (e.g., `deepseek/deepseek-r1` to 1500, `mistralai/ministral-3b` to 200) to ensure comparability over time.
-
-More info here: [https://eqbench.com/about.html#creative-writing-v3](https://eqbench.com/about.html#creative-writing-v3)
-
-## Key Features
-
-*   **Hybrid Scoring:** Combines isolated rubric scoring with more discriminative pairwise Elo comparisons.
-*   **Glicko-2 System:** Uses a robust rating system that accounts for rating uncertainty and volatility, adapted to weight win margins.
-*   **Discriminative Prompts:** Prompts are designed to challenge models in areas like humor, romance, spatial awareness, and unique perspectives.
-*   **Bias Mitigation:** Incorporates strategies to reduce known LLM judge biases (Length, Position, Verbosity, Poetic Incoherence).
-*   **Iteration-Based:** Runs multiple iterations per prompt to account for generation variability.
-*   **Modular Narrative Pipeline:** Compose multi-step generation workflows with pluggable steps for warmup, structural beats, and story writing. Supports ablation testing.
-
-## Usage
-
-### Prerequisites
-
-*   Python 3.x
-*   API keys for the test and judge models (compatible with OpenAI/OpenRouter API format).
-*   Required Python packages.
-
-### Setup
-
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/maxzhuyt/creative-writing-bench.git
-    cd creative-writing-bench
-    ```
-
-2.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    # Or manually:
-    # pip install requests python-dotenv numpy scipy tqdm glicko2 nltk joblib trueskill
-    ```
-    You also need to download NLTK data:
-    ```python
-    import nltk
-    nltk.download('punkt')
-    nltk.download('cmudict')
-    ```
-
-3.  **Configure API Keys:**
-    *   Copy the example environment file: `cp .env.example .env`
-    *   Edit the `.env` file and add your API keys and desired endpoint URLs for the test and judge models.
-
-4.  **Unzip leaderboard data (for Elo comparison):**
-    ```bash
-    unzip creative_bench_runs.zip
-    unzip elo_results.zip
-    ```
-
-### Running the Benchmark (Standard)
-
-For a leaderboard-comparable score using vanilla single-shot generation:
-
-```bash
-python creative_writing_bench.py \
-    --test-model "your-model-provider/your-model-name" \
-    --judge-model "anthropic/claude-sonnet-4" \
-    --runs-file "creative_bench_runs.json" \
-    --run-id "my_run" \
-    --iterations 3 \
-    --threads 4
-```
-
-### Running with the Narrative Pipeline
-
-The narrative pipeline replaces single-shot generation with a 3-step process:
-
-1. **Step 0 (Warmup):** Select or generate a structural beat sheet from a reference story
-2. **Step 1 (Beats):** Adapt the beat sheet to the specific writing prompt
-3. **Step 2 (Story):** Write the story following the structural beats
-
-#### Using pre-computed warmup templates
-
-```bash
-python creative_writing_bench.py \
-    --test-model "anthropic/claude-sonnet-4-6" \
-    --judge-model "anthropic/claude-sonnet-4" \
-    --runs-file "creative_bench_runs.json" \
-    --narrative-pipeline "data/narrative_step0_templates.json" \
-    --run-id "narrative_run" \
-    --iterations 3 \
-    --threads 4
-```
-
-The file `data/narrative_step0_templates.json` contains 6 pre-generated beat sheets (3 from famous stories, 3 from contemporary fiction). One is randomly sampled per generation task.
-
-#### Rubric-only (skip Elo)
-
-Add `--no-elo` to skip the pairwise matchup stage (faster, cheaper):
-
-```bash
-python creative_writing_bench.py \
-    --test-model "anthropic/claude-sonnet-4-6" \
-    --judge-model "anthropic/claude-sonnet-4" \
-    --runs-file "creative_bench_runs.json" \
-    --narrative-pipeline "data/narrative_step0_templates.json" \
-    --run-id "rubric_only" \
-    --iterations 3 \
-    --threads 4 \
-    --no-elo
-```
-
----
-
 ## Narrative Pipeline: Architecture and Ablation Guide
 
 The pipeline is defined in `core/narrative_pipeline.py`. Each step is an independent object that can be added, removed, replaced, or configured.
@@ -147,6 +29,21 @@ All steps share a `PipelineContext` that accumulates outputs. Each step can read
 | `BeatSheetStep` | beats | Yes | Adapt warmup beats to the writing prompt |
 | `StoryWriteStep` | story | Yes | Write the story from structural beats |
 | `VanillaStep` | story | Yes | Single-shot generation (original benchmark behavior) |
+
+### Pre-computed Warmup Templates
+
+The file `data/narrative_step0_templates.json` contains 6 pre-generated structural beat sheets, each extracted from a different reference story using the `c1_specific` prompt style (7 scene-level beats with named techniques). These were generated once via `llm-fiction-writing/step0_experiments.py` and are reused across all benchmark runs for reproducibility and cost savings (no API call needed at step 0).
+
+| source_id | Type | Reference Story |
+|---|---|---|
+| A1 | Famous | The Ones Who Walk Away from Omelas (Le Guin) |
+| A2 | Famous | The Lottery (Jackson) |
+| A4 | Famous | The Yellow Wallpaper (Gilman) |
+| B1 | Contemporary | The Fellow (New Yorker) |
+| B2 | Contemporary | Poor Girl (New Yorker) |
+| B3 | Contemporary | The Dog (New Yorker) |
+
+One template is randomly sampled per generation task. To fix a specific template for ablation, use `source_id` when constructing the pipeline (see ablation examples below).
 
 ### Preset Pipelines
 
@@ -309,7 +206,91 @@ Three prompt styles are available for `GenerateWarmupStep`:
 
 ---
 
-## Important Arguments
+## Quick Start
+
+### Prerequisites
+
+*   Python 3.x
+*   API keys for the test and judge models (compatible with OpenAI/OpenRouter API format).
+
+### Setup
+
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/maxzhuyt/creative-writing-bench.git
+    cd creative-writing-bench
+    ```
+
+2.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    # Or manually:
+    # pip install requests python-dotenv numpy scipy tqdm glicko2 nltk joblib trueskill
+    ```
+    You also need to download NLTK data:
+    ```python
+    import nltk
+    nltk.download('punkt')
+    nltk.download('cmudict')
+    ```
+
+3.  **Configure API Keys:**
+    *   Copy the example environment file: `cp .env.example .env`
+    *   Edit the `.env` file and add your API keys and desired endpoint URLs for the test and judge models.
+
+4.  **Unzip leaderboard data (for Elo comparison):**
+    ```bash
+    unzip creative_bench_runs.zip
+    unzip elo_results.zip
+    ```
+
+### Running with the Narrative Pipeline
+
+```bash
+python creative_writing_bench.py \
+    --test-model "anthropic/claude-sonnet-4-6" \
+    --judge-model "anthropic/claude-sonnet-4" \
+    --runs-file "creative_bench_runs.json" \
+    --narrative-pipeline "data/narrative_step0_templates.json" \
+    --run-id "narrative_run" \
+    --iterations 3 \
+    --threads 4
+```
+
+Add `--no-elo` to skip pairwise matchups (faster, cheaper, rubric score only).
+
+### Running the Benchmark (Standard / Vanilla)
+
+For a leaderboard-comparable score using vanilla single-shot generation:
+
+```bash
+python creative_writing_bench.py \
+    --test-model "your-model-provider/your-model-name" \
+    --judge-model "anthropic/claude-sonnet-4" \
+    --runs-file "creative_bench_runs.json" \
+    --run-id "my_run" \
+    --iterations 3 \
+    --threads 4
+```
+
+---
+
+## How the Benchmark Works
+
+The evaluation process involves several steps:
+
+1.  **Generation:** The model under test generates responses to 32 distinct writing prompts across 3 iterations (96 items total). Generation uses a temperature of 0.7 and min_p of 0.1 to encourage creativity while maintaining some consistency.
+2.  **Rubric Scoring:** Each generated piece is individually assessed by a judge model (Anthropic's Claude Sonnet 4 recommended for leaderboard parity) against a comprehensive rubric.
+3.  **Initial Elo Inference:** The aggregate rubric score is used to estimate an initial Elo rating for the model being evaluated relative to existing models.
+4.  **Pairwise Matchups (Sparse):** The model is compared against neighboring models on the leaderboard using pairwise matchups. The judge determines the better output across several criteria, assigning a score margin (using `+` symbols).
+5.  **Glicko Calculation:** Elo scores are calculated using the Glicko-2 rating system, modified to incorporate the win margin (number of `+`'s) from pairwise comparisons. This process loops until model positions stabilize.
+6.  **Pairwise Matchups (Comprehensive):** More thorough pairwise comparisons are conducted with the model's final neighbors.
+7.  **Final Elo Calculation:** The definitive leaderboard Elo score is computed based on all comparisons.
+8.  **Normalization:** Raw Elo scores are normalized by anchoring specific models (e.g., `deepseek/deepseek-r1` to 1500, `mistralai/ministral-3b` to 200) to ensure comparability over time.
+
+More info here: [https://eqbench.com/about.html#creative-writing-v3](https://eqbench.com/about.html#creative-writing-v3)
+
+## CLI Arguments
 
 *   `--test-model`: Identifier for the model you want to evaluate.
 *   `--judge-model`: Identifier for the judge model (use `anthropic/claude-sonnet-4` for leaderboard scores).
@@ -322,21 +303,20 @@ Three prompt styles are available for `GenerateWarmupStep`:
 *   `--redo-judging`: Re-run the judge step on existing generated items.
 *   `--verbosity`: Logging level (e.g., `DEBUG`, `INFO`).
 
-
-### Canonical Leaderboard Results
+## Canonical Leaderboard Results
 
 Leaderboard results are saved in `creative_bench_runs.zip` and `elo_results.zip`. If you would to compare a result against the leaderboard models, unzip these into the root repository dir and the eval pipeline will use them in ELO matchups (assuming you are using default run file paths), giving you a leaderboard-comparable result.
 
 These canonical zip files may not be always updated, so if you need the latest results, ping contact@eqbench.com.
 
-### Understanding the Output
+## Understanding the Output
 
 *   Progress will be logged to the console.
 *   Detailed run data, including generated text and judge scores, is saved in the specified `--runs-file` (e.g., `creative_bench_runs.json`).
 *   Elo analysis results, including pairwise comparisons and final ratings, are stored in `elo_results.json`.
 *   The final normalized Elo score (`elo_norm`) for your test model will be printed at the end and saved in `elo_results.json`. This is the score comparable to the EQ-Bench leaderboard.
 
-### Estimated Costs (using Sonnet 4 as judge via OpenRouter)
+## Estimated Costs (using Sonnet 4 as judge via OpenRouter)
 
 | Run Type | Approx. Cost |
 |---|---|
@@ -344,17 +324,6 @@ These canonical zip files may not be always updated, so if you need the latest r
 | Vanilla (rubric + Elo) | ~$10-15 |
 | Narrative pipeline (rubric only) | ~$8 |
 | Narrative pipeline (rubric + Elo) | ~$15-20 |
-
-## Benchmark Philosophy
-
-Evaluating creative writing is inherently subjective. This benchmark aims to provide a reliable *relative* ranking by:
-
-*   Using a judge model (Sonnet 4) known for decent literary assessment.
-*   Employing pairwise comparisons for better discrimination than rubric scores alone.
-*   Choosing prompts that deliberately expose model weaknesses, creating a steeper evaluation gradient.
-*   Acknowledging and attempting to mitigate known LLM judge biases.
-
-However, no benchmark is perfect. Always supplement scores by reading sample outputs and forming your own judgment.
 
 ## Scoring System: Rubric vs. Elo
 
